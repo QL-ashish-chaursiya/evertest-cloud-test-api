@@ -159,11 +159,14 @@ class AutomationService {
         }
     }
 
-    async waitForNetworkIdle(timeout = 30000) {
+    async waitForNetworkIdle(timeout = 20000) {
         try {
+            console.log('⏳ Waiting for network idle...');
             await this.page.waitForLoadState('networkidle', { timeout });
+            console.log('✅ Network is idle');
         } catch (error) {
-            console.warn('Network idle timeout:', error.message);
+            console.warn('⚠️ Network idle timeout:', error.message);
+            // Continue execution even if timeout occurs
         }
     }
 
@@ -216,6 +219,12 @@ class AutomationService {
     async performAction(action, arr = [], index = 0) {
         try {
             const frame = await this.getFrameContext(action);
+
+            // Wait for network idle before performing any action (except navigation actions)
+            const skipNetworkIdleFor = ['System_Navigate', 'navigate'];
+            if (!skipNetworkIdleFor.includes(action.type)) {
+                await this.waitForNetworkIdle(20000);
+            }
 
             switch (action.type) {
                 case 'System_Navigate':
