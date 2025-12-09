@@ -10,7 +10,7 @@ class AutomationService {
 
     async init() {
         this.browser = await chromium.launch({
-            headless: false, // Set to false to see the browser in action
+            headless: false,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
         this.context = await this.browser.newContext();
@@ -23,7 +23,6 @@ class AutomationService {
         }
         await this.page.goto(url, { waitUntil: 'networkidle' });
     }
-  
 
     async close() {
         if (this.browser) {
@@ -55,12 +54,11 @@ class AutomationService {
                     result.status = 'fail';
                     result.message = error.message;
                     results.push(result);
-                    break; // Stop on failure
+                    break;
                 }
 
                 results.push(result);
 
-                // Handle wait/delay
                 const finalWait = action.wait !== undefined ? action.wait : 1;
                 await delay(finalWait * 1000);
             }
@@ -74,41 +72,60 @@ class AutomationService {
     }
 
     /**
-     * Locate element by xpath array or uniqueSelector
-     * Tries multiple XPath options until one works
+     * Reusable XPath resolver - tries multiple XPaths and returns the first valid one
+     */
+    async resolveSelector(element, frame, timeout = 3000) {
+        if (!element) {
+            return { selector: null, found: false };
+        }
+
+        // Handle uniqueSelector first
+        if (element.uniqueSelector) {
+            try {
+                const el = await frame.waitForSelector(element.uniqueSelector, { timeout });
+                if (el) {
+                    return { selector: element.uniqueSelector, found: true, element: el };
+                }
+            } catch (e) {
+                console.warn(`❌ uniqueSelector failed: ${element.uniqueSelector}`);
+            }
+        }
+
+        // Handle XPath (single or array)
+        if (element.xpath) {
+            const xpathArray = Array.isArray(element.xpath) ? element.xpath : [element.xpath];
+            
+            for (const xpath of xpathArray) {
+                try {
+                    const selector = `xpath=${xpath}`;
+                    const el = await frame.waitForSelector(selector, { timeout });
+                    if (el) {
+                        console.log(`✅ Element found with XPath: ${xpath}`);
+                        return { selector, found: true, element: el };
+                    }
+                } catch (e) {
+                    console.warn(`❌ XPath failed: ${xpath}`);
+                    continue;
+                }
+            }
+        }
+
+        return { selector: null, found: false, element: null };
+    }
+
+    /**
+     * Locate element by xpath array or uniqueSelector (legacy method - uses resolveSelector)
      */
     async locateElement(action) {
-        try {
-            if (action.element?.xpath) {
-                const xpathArray = Array.isArray(action.element.xpath) 
-                    ? action.element.xpath 
-                    : [action.element.xpath];
-                
-                for (const xpath of xpathArray) {
-                    try {
-                        const selector = `xpath=${xpath}`;
-                        const element = await this.page.waitForSelector(selector, { timeout: 3000 });
-                        console.log(`✅ Element found with XPath: ${xpath}`);
-                        return { element, failed: false };
-                    } catch (e) {
-                        console.warn(`❌ XPath failed: ${xpath}`);
-                        continue;
-                    }
-                }
-                return { element: null, failed: true };
-            } else if (action.element?.uniqueSelector) {
-                const element = await this.page.waitForSelector(action.element.uniqueSelector, { timeout: 10000 });
-                return { element, failed: false };
-            }
-            return { element: null, failed: true };
-        } catch (error) {
-            return { element: null, failed: true };
-        }
+        const result = await this.resolveSelector(action.element, this.page);
+        return { 
+            element: result.element, 
+            failed: !result.found 
+        };
     }
 
     /**
      * Ensure element is clickable and visible
-     * Tries multiple XPath options until one works
      */
     async ensureClickable(xpath, timeout = 10000) {
         try {
@@ -122,7 +139,6 @@ class AutomationService {
                     
                     if (!element) continue;
                     
-                    // Check if element is visible
                     const isVisible = await this.page.evaluate((el) => {
                         return el.offsetParent !== null;
                     }, element);
@@ -143,7 +159,6 @@ class AutomationService {
         }
     }
 
-    
     async waitForNetworkIdle(timeout = 30000) {
         try {
             await this.page.waitForLoadState('networkidle', { timeout });
@@ -153,24 +168,54 @@ class AutomationService {
     }
 
     /**
+     * Get the correct frame context (main page or iframe)
+     */
+    async getFrameContext(action) {
+        let frame = this.page;
+        
+        if (action.isTopFrame === false && action.iframeIdentifier?.src) {
+            const iframeHandle = await this.page.$(`iframe[src="${action.iframeIdentifier.src}"]`);
+            if (!iframeHandle) {
+                throw new Error(`Iframe with src ${action.iframeIdentifier.src} not found`);
+            }
+            frame = await iframeHandle.contentFrame();
+            if (!frame) {
+                throw new Error(`Could not get frame for iframe src ${action.iframeIdentifier.src}`);
+            }
+        }
+        
+        return frame;
+    }
+
+    /**
+     * Dispatch events on an element (handles xpath= prefix)
+     */
+    async dispatchEvents(frame, selector, value, events = ['input', 'change']) {
+        await frame.evaluate(({ selector, value, events }) => {
+            let el;
+            if (selector.startsWith('xpath=')) {
+                const xpath = selector.replace('xpath=', '');
+                el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            } else {
+                el = document.querySelector(selector);
+            }
+            if (el) {
+                if (value !== undefined) {
+                    el.value = value;
+                }
+                events.forEach(eventName => {
+                    el.dispatchEvent(new Event(eventName, { bubbles: true }));
+                });
+            }
+        }, { selector, value, events });
+    }
+
+    /**
      * Main action performer
      */
-   
     async performAction(action, arr = [], index = 0) {
         try {
-            // Detect iframe context
-            let frame = this.page;
-            if (action.isTopFrame === false && action.iframeIdentifier?.src) {
-                // Find the iframe by src
-                const iframeHandle = await this.page.$(`iframe[src="${action.iframeIdentifier.src}"]`);
-                if (!iframeHandle) {
-                    throw new Error(`Iframe with src ${action.iframeIdentifier.src} not found`);
-                }
-                frame = await iframeHandle.contentFrame();
-                if (!frame) {
-                    throw new Error(`Could not get frame for iframe src ${action.iframeIdentifier.src}`);
-                }
-            }
+            const frame = await this.getFrameContext(action);
 
             switch (action.type) {
                 case 'System_Navigate':
@@ -178,13 +223,11 @@ class AutomationService {
                     return { success: true, message: `Navigated to ${action.url}` };
 
                 case 'navigate': {
-                    const expectedUrl = action.url;
+                    const normalizedExpected = normalizeUrl(action.url);
                     const timeout = 10000;
                     const pollInterval = 1000;
                     let isMatch = false;
                     let elapsed = 0;
-
-                    const normalizedExpected = normalizeUrl(expectedUrl);
 
                     while (elapsed < timeout) {
                         const currentUrl = frame.url();
@@ -211,8 +254,6 @@ class AutomationService {
                         return { success: true, message: 'File input: click skipped to avoid file dialog' };
                     }
 
-                    //await this.waitForNetworkIdle();
-
                     if (!action.element?.xpath) {
                         throw new Error('XPath required for mousedown action');
                     }
@@ -222,16 +263,15 @@ class AutomationService {
                         return clickResult;
                     }
 
-                    const selector = clickResult.selector;
-                    const elementHandle = await frame.$(selector);
+                    const elementHandle = await frame.$(clickResult.selector);
                     if (!elementHandle) {
                         throw new Error('Element not found for mousedown action');
                     }
+                    
                     const box = await elementHandle.boundingBox();
                     if (!box) {
                         throw new Error('Could not get bounding box for element');
                     }
-                    
                     
                     await frame.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
                     await frame.mouse.down();
@@ -240,104 +280,33 @@ class AutomationService {
                 }
 
                 case 'change': {
-                    if (!action.element?.xpath && !action.element?.uniqueSelector) {
-                        throw new Error('XPath or uniqueSelector required for change action');
-                    }
-
-                    let selector = null;
-                    if (action.element?.xpath) {
-                        const xpathArray = Array.isArray(action.element.xpath)
-                            ? action.element.xpath
-                            : [action.element.xpath];
-                        for (const xpath of xpathArray) {
-                            try {
-                                const sel = `xpath=${xpath}`;
-                                const el = await frame.$(sel);
-                                if (el) {
-                                    selector = sel;
-                                    break;
-                                }
-                            } catch (e) {
-                                continue;
-                            }
-                        }
-                    } else {
-                        selector = action.element.uniqueSelector;
-                    }
-
-                    if (!selector) {
+                    const resolved = await this.resolveSelector(action.element, frame);
+                    if (!resolved.found) {
                         throw new Error('Element not found for change action');
                     }
 
-                    const element = await frame.$(selector);
-                    if (!element) {
-                        throw new Error('Element not found for change action');
-                    }
-
-                    await frame.focus(selector);
-                    await frame.fill(selector, '');
+                    await frame.focus(resolved.selector);
+                    await frame.fill(resolved.selector, '');
                     await delay(100);
-                    // Use page.type for human-like typing
-                    await frame.type(selector, action.value, { delay: 100 });
+                    await frame.type(resolved.selector, action.value, { delay: 100 });
 
-                    // Dispatch input and change events, handling xpath= selectors
-                    await frame.evaluate(({ selector, value }) => {
-                        let el;
-                        if (selector.startsWith('xpath=')) {
-                            const xpath = selector.replace('xpath=', '');
-                            el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                        } else {
-                            el = document.querySelector(selector);
-                        }
-                        if (el) {
-                            el.value = value;
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                    }, { selector, value: action.value });
+                    await this.dispatchEvents(frame, resolved.selector, action.value);
 
                     return { success: true, message: 'Successfully changed value (typed)' };
                 }
 
                 case 'hover': {
-                    if (!action.element?.xpath && !action.element?.uniqueSelector) {
-                        throw new Error('XPath or uniqueSelector required for hover action');
-                    }
-
-                    let selector = null;
-                    
-                    if (action.element?.xpath) {
-                        const xpathArray = Array.isArray(action.element.xpath) 
-                            ? action.element.xpath 
-                            : [action.element.xpath];
-                        
-                        for (const xpath of xpathArray) {
-                            try {
-                                const sel = `xpath=${xpath}`;
-                                const el = await this.page.$(sel);
-                                if (el) {
-                                    selector = sel;
-                                    break;
-                                }
-                            } catch (e) {
-                                continue;
-                            }
-                        }
-                    } else {
-                        selector = action.element.uniqueSelector;
-                    }
-
-                    if (!selector) {
+                    const resolved = await this.resolveSelector(action.element, this.page);
+                    if (!resolved.found) {
                         throw new Error('Element not found for hover action');
                     }
 
-                    await this.page.hover(selector);
+                    await this.page.hover(resolved.selector);
                     return { success: true, message: 'Successfully hovered' };
                 }
 
                 case 'scroll': {
                     if (action.containerXPath) {
-                        // Scroll specific container
                         await this.page.evaluate(({ xpath, scrollX, scrollY }) => {
                             const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                             const container = result.singleNodeValue;
@@ -346,7 +315,6 @@ class AutomationService {
                             }
                         }, { xpath: action.containerXPath[0], scrollX: action.scrollX, scrollY: action.scrollY });
                     } else {
-                        // Scroll window
                         await this.page.evaluate(({ x, y }) => {
                             window.scrollTo({ left: x || 0, top: y || 0, behavior: 'smooth' });
                         }, { x: action.scrollX, y: action.scrollY });
@@ -361,50 +329,21 @@ class AutomationService {
                 case 'ArrowDown':
                 case 'ArrowLeft':
                 case 'ArrowRight':
-                case 'Escape': {
+                case 'Escape':
                     await this.page.keyboard.press(action.type);
                     return { success: true, message: `✅ Simulated ${action.type} key` };
-                }
 
                 case 'fileSelect': {
                     if (!action.storageData) {
                         return { success: false, message: 'No file data found' };
                     }
 
-                    if (!action.element?.xpath && !action.element?.uniqueSelector) {
-                        throw new Error('XPath or uniqueSelector required for fileSelect action');
-                    }
-
-                    let selector = null;
-                    
-                    if (action.element?.xpath) {
-                        const xpathArray = Array.isArray(action.element.xpath) 
-                            ? action.element.xpath 
-                            : [action.element.xpath];
-                        
-                        for (const xpath of xpathArray) {
-                            try {
-                                const sel = `xpath=${xpath}`;
-                                const el = await this.page.$(sel);
-                                if (el) {
-                                    selector = sel;
-                                    break;
-                                }
-                            } catch (e) {
-                                continue;
-                            }
-                        }
-                    } else {
-                        selector = action.element.uniqueSelector;
-                    }
-
-                    if (!selector) {
+                    const resolved = await this.resolveSelector(action.element, this.page);
+                    if (!resolved.found) {
                         throw new Error('Element not found for fileSelect action');
                     }
 
                     const fileData = action.storageData;
-
-                    // Convert base64 to file and set
                     const byteString = atob(fileData.content.split(',')[1]);
                     const ab = new ArrayBuffer(byteString.length);
                     const ia = new Uint8Array(ab);
@@ -413,7 +352,7 @@ class AutomationService {
                     }
 
                     const buffer = Buffer.from(ab);
-                    await this.page.setInputFiles(selector, {
+                    await this.page.setInputFiles(resolved.selector, {
                         name: fileData.name,
                         mimeType: fileData.type,
                         buffer: buffer
@@ -421,112 +360,103 @@ class AutomationService {
 
                     return { success: true, message: `File "${fileData.name}" selected` };
                 }
-                   case "dragstart": {
-    const { element, failed } = await this.locateElement(action);
-    if (failed || !element) {
-        return { success: false, message: "dragstart: element not found" };
-    }
 
-    const box = await element.boundingBox();
-    if (!box) {
-        return { success: false, message: "dragstart: cannot get bounding box" };
-    }
+                case 'dragstart': {
+                    const { element, failed } = await this.locateElement(action);
+                    if (failed || !element) {
+                        return { success: false, message: 'dragstart: element not found' };
+                    }
 
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
+                    const box = await element.boundingBox();
+                    if (!box) {
+                        return { success: false, message: 'dragstart: cannot get bounding box' };
+                    }
 
-    const client = await this.page.context().newCDPSession(this.page);
+                    const x = box.x + box.width / 2;
+                    const y = box.y + box.height / 2;
 
-    // disable scrolling (same as background.js)
-    await this.page.addStyleTag({
-        content: `
-            html, body {
-                overflow: hidden !important;
-                height: 100% !important;
-                touch-action: none !important;
-            }
-        `
-    });
+                    const client = await this.page.context().newCDPSession(this.page);
 
-    // move pointer to start point
-    await client.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x,
-        y,
-        button: "left",
-        pointerType: "mouse",
-    });
+                    await this.page.addStyleTag({
+                        content: `
+                            html, body {
+                                overflow: hidden !important;
+                                height: 100% !important;
+                                touch-action: none !important;
+                            }
+                        `
+                    });
 
-    // mouse down = start drag
-    await client.send("Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x,
-        y,
-        button: "left",
-        clickCount: 1,
-        pointerType: "mouse",
-    });
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mouseMoved',
+                        x,
+                        y,
+                        button: 'left',
+                        pointerType: 'mouse',
+                    });
 
-    return { success: true, message: "Drag started via Playwright CDP" };
-}
- case "dragend": {
-    let x = null;
-    let y = null;
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mousePressed',
+                        x,
+                        y,
+                        button: 'left',
+                        clickCount: 1,
+                        pointerType: 'mouse',
+                    });
 
-    if (action.dropTarget?.xpath || action.dropTarget?.uniqueSelector) {
-        const { element, failed } = await this.locateElement({ element: action.dropTarget });
-        if (!failed && element) {
-            const box = await element.boundingBox();
-            if (box) {
-                x = box.x + box.width / 2;
-                y = box.y + box.height / 2;
-            }
-        }
-    }
+                    return { success: true, message: 'Drag started via Playwright CDP' };
+                }
 
-    // fallback (if no drop target found)
-    if (x === null || y === null) {
-        const fallback = await this.page.evaluate(() => ({
-            x: window.innerWidth / 2,
-            y: window.innerHeight / 2
-        }));
-        x = fallback.x;
-        y = fallback.y;
-    }
+                case 'dragend': {
+                    let x = null;
+                    let y = null;
 
-    const client = await this.page.context().newCDPSession(this.page);
+                    if (action.dropTarget?.xpath || action.dropTarget?.uniqueSelector) {
+                        const { element, failed } = await this.locateElement({ element: action.dropTarget });
+                        if (!failed && element) {
+                            const box = await element.boundingBox();
+                            if (box) {
+                                x = box.x + box.width / 2;
+                                y = box.y + box.height / 2;
+                            }
+                        }
+                    }
 
-    // move pointer to drop point
-    await client.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x,
-        y,
-        buttons: 1,
-        pointerType: "mouse",
-    });
+                    if (x === null || y === null) {
+                        const fallback = await this.page.evaluate(() => ({
+                            x: window.innerWidth / 2,
+                            y: window.innerHeight / 2
+                        }));
+                        x = fallback.x;
+                        y = fallback.y;
+                    }
 
-    // mouseReleased = drop
-    await client.send("Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x,
-        y,
-        button: "left",
-        clickCount: 1,
-        pointerType: "mouse",
-    });
+                    const client = await this.page.context().newCDPSession(this.page);
 
-    // re-enable scrolling
-    await this.page.evaluate(() => {
-        const style = document.getElementById("__no_scroll_style__");
-        if (style) style.remove();
-    });
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mouseMoved',
+                        x,
+                        y,
+                        buttons: 1,
+                        pointerType: 'mouse',
+                    });
 
-    return { success: true, message: "Drag ended via Playwright CDP" };
-}
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mouseReleased',
+                        x,
+                        y,
+                        button: 'left',
+                        clickCount: 1,
+                        pointerType: 'mouse',
+                    });
 
-               
+                    await this.page.evaluate(() => {
+                        const style = document.getElementById('__no_scroll_style__');
+                        if (style) style.remove();
+                    });
 
-                
+                    return { success: true, message: 'Drag ended via Playwright CDP' };
+                }
 
                 default:
                     console.warn(`Unsupported action type: ${action.type}`);
