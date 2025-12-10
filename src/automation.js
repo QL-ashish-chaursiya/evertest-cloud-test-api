@@ -21,7 +21,7 @@ class AutomationService {
         if (!this.page) {
             throw new Error('Browser page not initialized. Call init() first.');
         }
-        await this.page.goto(url, { waitUntil: 'networkidle' });
+        await this.page.goto(url, { waitUntil: 'load' });
     }
 
     async close() {
@@ -223,7 +223,7 @@ class AutomationService {
             // Wait for network idle before performing any action (except navigation actions)
             const skipNetworkIdleFor = ['System_Navigate', 'navigate'];
             if (!skipNetworkIdleFor.includes(action.type)) {
-                await this.waitForNetworkIdle(20000);
+               // await this.waitForNetworkIdle(20000);
             }
 
             switch (action.type) {
@@ -289,20 +289,68 @@ class AutomationService {
                 }
 
                 case 'change': {
-                    const resolved = await this.resolveSelector(action.element, frame);
-                    if (!resolved.found) {
-                        throw new Error('Element not found for change action');
-                    }
+    const resolved = await this.resolveSelector(action.element, frame);
+    if (!resolved.found) throw new Error('Element not found for change action');
 
-                    await frame.focus(resolved.selector);
-                    await frame.fill(resolved.selector, '');
-                    await delay(100);
-                    await frame.type(resolved.selector, action.value, { delay: 100 });
+    // Identify element type
+    const elementType = await frame.evaluate((selector) => {
+        const el = selector.startsWith('xpath=')
+            ? document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+            : document.querySelector(selector);
+        if (!el) return null;
 
-                    await this.dispatchEvents(frame, resolved.selector, action.value);
+        if (el.tagName === 'SELECT') return 'select';
+        if (el.type === 'checkbox') return 'checkbox';
+        if (el.type === 'radio') return 'radio';
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return 'text';
 
-                    return { success: true, message: 'Successfully changed value (typed)' };
-                }
+        return 'unknown';
+    }, resolved.selector);
+
+    if (!elementType) throw new Error("Unable to detect element type");
+
+    // Handle according to element type
+    if (elementType === 'text') {
+        await frame.fill(resolved.selector, action.value || '');
+        await this.dispatchEvents(frame, resolved.selector, action.value);
+        return { success: true, message: 'Text entered' };
+    }
+
+     if (elementType === 'checkbox') {
+    // 1. Try direct check()
+    try {
+        await frame.check(resolved.selector, { force: true });
+        return { success: true, message: 'Checkbox checked' };
+    } catch (e) {
+        // 2. Fallback: click the label
+        const inputId = await frame.evaluate(selector => {
+            const el = document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            return el?.id || null;
+        }, resolved.selector);
+
+        if (inputId) {
+            await frame.click(`label[for="${inputId}"]`, { force: true });
+            return { success: true, message: 'Checkbox checked by clicking label' };
+        }
+
+        throw e;
+    }
+}
+
+
+    if (elementType === 'radio') {
+        await frame.check(resolved.selector);
+        return { success: true, message: 'Radio selected' };
+    }
+
+    if (elementType === 'select') {
+        await frame.selectOption(resolved.selector, action.value);
+        return { success: true, message: 'Dropdown value selected' };
+    }
+
+    return { success: false, message: 'Unsupported input type for change action' };
+}
+
 
                 case 'hover': {
                     const resolved = await this.resolveSelector(action.element, this.page);
