@@ -1,5 +1,5 @@
 const { chromium } = require('playwright');
-const { delay, normalizeUrl } = require('./utils');
+const { delay, normalizeUrl, runAssertions } = require('./utils');
 
 class AutomationService {
     constructor() {
@@ -217,6 +217,9 @@ class AutomationService {
      * Main action performer
      */
     async performAction(action, arr = [], index = 0) {
+         let  success = false;
+  let  message = "";
+  let assertions = [];
         try {
             const frame = await this.getFrameContext(action);
 
@@ -229,7 +232,9 @@ class AutomationService {
             switch (action.type) {
                 case 'System_Navigate':
                     await frame.goto(action.url, { waitUntil: 'networkidle' });
-                    return { success: true, message: `Navigated to ${action.url}` };
+                     success =  true, 
+                     message  = `Navigated to ${action.url}` ;
+                     break
 
                 case 'navigate': {
                     const normalizedExpected = normalizeUrl(action.url);
@@ -248,13 +253,12 @@ class AutomationService {
                         await delay(pollInterval);
                         elapsed += pollInterval;
                     }
-
-                    return {
-                        success: true,
-                        message: isMatch
+                     success =  true, 
+                      message = isMatch
                             ? `Current URL matches expected (normalized): ${normalizeUrl(frame.url())}`
                             : `Current URL does not match expected: ${normalizeUrl(frame.url())} vs ${normalizedExpected}`
-                    };
+                     break
+                    
                 }
 
                 case 'mousedown': {
@@ -285,7 +289,10 @@ class AutomationService {
                     await frame.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
                     await frame.mouse.down();
                     await frame.mouse.up();
-                    return { success: true, message: '✅ Mouse click simulated (isTrusted)' };
+                    success =  true, 
+                     message  = `Mouse click simulated (isTrusted)` ;
+                     break
+                    
                 }
 
                 case 'change': {
@@ -313,14 +320,18 @@ class AutomationService {
     if (elementType === 'text') {
         await frame.fill(resolved.selector, action.value || '');
         await this.dispatchEvents(frame, resolved.selector, action.value);
-        return { success: true, message: 'Text entered' };
+         success = true
+          message = 'Text entered' 
+          break
     }
 
      if (elementType === 'checkbox') {
     // 1. Try direct check()
     try {
         await frame.check(resolved.selector, { force: true });
-        return { success: true, message: 'Checkbox checked' };
+        success = true
+          message = 'Text entered' 
+          break
     } catch (e) {
         // 2. Fallback: click the label
         const inputId = await frame.evaluate(selector => {
@@ -330,7 +341,9 @@ class AutomationService {
 
         if (inputId) {
             await frame.click(`label[for="${inputId}"]`, { force: true });
-            return { success: true, message: 'Checkbox checked by clicking label' };
+            success = true
+          message = 'Text entered' 
+          break
         }
 
         throw e;
@@ -340,15 +353,21 @@ class AutomationService {
 
     if (elementType === 'radio') {
         await frame.check(resolved.selector);
-        return { success: true, message: 'Radio selected' };
+          success = true
+          message = 'Text entered' 
+          break
     }
 
     if (elementType === 'select') {
         await frame.selectOption(resolved.selector, action.value);
-        return { success: true, message: 'Dropdown value selected' };
+         success = true
+          message = 'Text entered' 
+          break
     }
 
-    return { success: false, message: 'Unsupported input type for change action' };
+     success = false
+          message = 'Unsupported Type' 
+          break
 }
 
 
@@ -359,7 +378,9 @@ class AutomationService {
                     }
 
                     await this.page.hover(resolved.selector);
-                    return { success: true, message: 'Successfully hovered' };
+                      success = true
+          message = 'Hovered' 
+          break
                 }
 
                 case 'scroll': {
@@ -377,7 +398,10 @@ class AutomationService {
                         }, { x: action.scrollX, y: action.scrollY });
                     }
                     await delay(1000);
-                    return { success: true, message: `Scroll to (${action.scrollX}, ${action.scrollY}) successful` };
+                    
+                     success = true
+          message = `Scroll to (${action.scrollX}, ${action.scrollY}) successful`
+          break
                 }
 
                 case 'Enter':
@@ -388,11 +412,15 @@ class AutomationService {
                 case 'ArrowRight':
                 case 'Escape':
                     await this.page.keyboard.press(action.type);
-                    return { success: true, message: `✅ Simulated ${action.type} key` };
+                       success = true
+          message = `Successfully Pressed`
+          break
 
                 case 'fileSelect': {
                     if (!action.storageData) {
-                        return { success: false, message: 'No file data found' };
+                        success = false
+          message = `File error`
+          break
                     }
 
                     const resolved = await this.resolveSelector(action.element, this.page);
@@ -415,18 +443,26 @@ class AutomationService {
                         buffer: buffer
                     });
 
-                    return { success: true, message: `File "${fileData.name}" selected` };
+                   
+                       success = true
+          message =  `File "${fileData.name}" selected`
+          break
                 }
 
                 case 'dragstart': {
                     const { element, failed } = await this.locateElement(action);
                     if (failed || !element) {
-                        return { success: false, message: 'dragstart: element not found' };
+                       success = false
+                      message =  `dragstart: element not found`
+                       break
                     }
 
                     const box = await element.boundingBox();
                     if (!box) {
-                        return { success: false, message: 'dragstart: cannot get bounding box' };
+                        
+                         success = false
+                      message =   'dragstart: cannot get bounding box'
+                       break
                     }
 
                     const x = box.x + box.width / 2;
@@ -461,7 +497,10 @@ class AutomationService {
                         pointerType: 'mouse',
                     });
 
-                    return { success: true, message: 'Drag started via Playwright CDP' };
+                    
+                      success = true
+                      message =    'Drag started via Playwright CDP'
+                       break
                 }
 
                 case 'dragend': {
@@ -512,13 +551,31 @@ class AutomationService {
                         if (style) style.remove();
                     });
 
-                    return { success: true, message: 'Drag ended via Playwright CDP' };
+                    
+                     success = true
+                      message =    'Drag end via Playwright CDP'
+                       break
                 }
 
                 default:
                     console.warn(`Unsupported action type: ${action.type}`);
-                    return { success: false, message: `Unsupported action type: ${action.type}` };
+                   
+                     success = false
+                      message =     `Unsupported action type: ${action.type}`
+                       break
             }
+             assertions = await runAssertions(action,this.page, action.element);
+             console.log("assertions",assertions)
+    const failedAssertions = assertions.some((a) => a.success == false);
+    const failedMsg =
+      assertions.find((a) => a.success == false)?.message ||
+      "No failed assertions";
+      
+    return {
+      success: success && !failedAssertions,
+      message: failedAssertions ? failedMsg : message,
+      assertions,
+    };
         } catch (error) {
             console.error(`Action failed:`, error);
             return { success: false, message: error.message };
