@@ -99,28 +99,23 @@ const normalizeUrl = (url) => {
 
 
 
-      case "downloadStarted":
-        try {
-          success = false;
-          let attempts = 0;
-          const maxAttempts = 5;
-          while (attempts < maxAttempts) {
-            const response = await sendMessageAsync({ command: "CHECK_DOWNLOAD_STARTED" });
-            if (response?.started) {
-              success = true;
-              break;
-            }
-            await new Promise(r => setTimeout(r, 500));
-            attempts++;
-          }
-          message = success
-            ? "Download has started"
-            : "Expected download to start, but it did not within timeout";
-        } catch (err) {
-          success = false;
-          message = "Error while checking download status";
-        }
-        break;
+       case "downloadStarted": {
+  try {
+    const download = await page.waitForEvent("download", {
+      timeout: 5000, // 5s timeout (adjust if needed)
+    });
+
+    success = !!download;
+    message = success
+      ? "Download has started"
+      : "Expected download to start, but it did not";
+  } catch (err) {
+    success = false;
+    message = "Expected download to start, but it did not within timeout";
+  }
+  break;
+}
+
       default:
         message = `⚠️ Unsupported assertion: ${type}`;
         success = false;
