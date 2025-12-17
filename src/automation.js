@@ -173,22 +173,57 @@ class AutomationService {
     /**
      * Get the correct frame context (main page or iframe)
      */
-    async getFrameContext(action) {
-        let frame = this.page;
-        
-        if (action.isTopFrame === false && action.iframeIdentifier?.src) {
-            const iframeHandle = await this.page.$(`iframe[src="${action.iframeIdentifier.src}"]`);
-            if (!iframeHandle) {
-                throw new Error(`Iframe with src ${action.iframeIdentifier.src} not found`);
-            }
-            frame = await iframeHandle.contentFrame();
-            if (!frame) {
-                throw new Error(`Could not get frame for iframe src ${action.iframeIdentifier.src}`);
-            }
+     normalizePath(path) {
+  return path
+    .split('/')                 
+    .filter(Boolean)               
+    .filter(segment => !isIdSegment(segment)) 
+    .join('/');
+}
+async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
+  const recorded = new URL(refSrc);
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const frames = this.page.frames();
+   console.log("all frames",frames)
+    for (const frame of frames) {
+      try {
+        if (!frame.url()) continue;
+
+        const current = new URL(frame.url());
+      console.log("current",normalizePath(current.pathname))
+        console.log("recorded",normalizePath(recorded.pathname))
+        const sameOrigin =
+          current.origin === recorded.origin;
+
+        const samePath =
+          normalizePath(current.pathname) ===
+          normalizePath(recorded.pathname);
+
+        if (sameOrigin && samePath) {
+          console.log("✅ Found iframe:", frame.url());
+          return frame;
         }
-        
-        return frame;
+      } catch (e) {
+        // ignore invalid URLs
+      }
     }
+
+    await this.page.waitForTimeout(intervalMs);
+  }
+
+  throw new Error(`⏱️ Iframe not found within ${timeoutMs}ms for ${refSrc}`);
+}
+
+    async getFrameContext(action) {
+  if (action.isTopFrame === false && action.iframeIdentifier?.src) {
+    return await this.waitForIframeBySrc(action.iframeIdentifier.src);
+  }
+
+  return this.page;
+}
+
 
     /**
      * Dispatch events on an element (handles xpath= prefix)
@@ -263,7 +298,8 @@ class AutomationService {
 
                 case 'mousedown': {
                     const nextAction = arr?.length - 1 > index && arr[index + 1]?.type === 'fileSelect';
-                    if (nextAction) {
+                    const isJsPopup = action.element.isAlert
+                    if (nextAction || isJsPopup) {
                         return { success: true, message: 'File input: click skipped to avoid file dialog' };
                     }
 
@@ -296,6 +332,10 @@ class AutomationService {
                 }
 
                 case 'change': {
+                      const isJsPopup = action.element.isAlert
+                    if (isJsPopup) {
+                        return { success: true, message: 'change ignore in Js popup' };
+                    }
     const resolved = await this.resolveSelector(action.element, frame);
     if (!resolved.found) throw new Error('Element not found for change action');
 
