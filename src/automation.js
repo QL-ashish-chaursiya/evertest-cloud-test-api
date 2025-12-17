@@ -1,5 +1,5 @@
 const { chromium } = require('playwright');
-const { delay, normalizeUrl, runAssertions } = require('./utils');
+const { delay, normalizeUrl, runAssertions, resolveVariableValue } = require('./utils');
 
 class AutomationService {
     constructor() {
@@ -358,8 +358,9 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
 
     // Handle according to element type
     if (elementType === 'text') {
-        await frame.fill(resolved.selector, action.value || '');
-        await this.dispatchEvents(frame, resolved.selector, action.value);
+         const finalValue = action?.variable?.name ? resolveVariableValue(action?.variable) : action.value;
+        await frame.fill(resolved.selector, finalValue || '');
+        await this.dispatchEvents(frame, resolved.selector, finalValue);
          success = true
           message = 'Text entered' 
           break
