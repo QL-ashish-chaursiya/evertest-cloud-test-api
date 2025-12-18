@@ -74,6 +74,43 @@ class AutomationService {
     /**
      * Reusable XPath resolver - tries multiple XPaths and returns the first valid one
      */
+    /**
+ * Scroll element into view before interaction
+ */
+async scrollToElement(frame, selector) {
+    if (!selector) return;
+
+    try {
+        await frame.evaluate((selector) => {
+            let el;
+            if (selector.startsWith('xpath=')) {
+                const xpath = selector.replace('xpath=', '');
+                el = document.evaluate(
+                    xpath,
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                ).singleNodeValue;
+            } else {
+                el = document.querySelector(selector);
+            }
+
+            if (el) {
+                el.scrollIntoView({
+                    behavior: 'auto',
+                    block: 'center',
+                    inline: 'center'
+                });
+            }
+        }, selector);
+
+        await frame.waitForTimeout(300); // allow scroll to finish
+    } catch (e) {
+        console.warn('⚠️ Scroll failed (non-blocking):', e.message);
+    }
+}
+
     async resolveSelector(element, frame, timeout = 3000) {
         if (!element) {
             return { selector: null, found: false };
@@ -316,6 +353,7 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                     if (!elementHandle) {
                         throw new Error('Element not found for mousedown action');
                     }
+                    await this.scrollToElement(frame, clickResult.selector);
                     
                     const box = await elementHandle.boundingBox();
                     if (!box) {
@@ -338,7 +376,7 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                     }
     const resolved = await this.resolveSelector(action.element, frame);
     if (!resolved.found) throw new Error('Element not found for change action');
-
+      await this.scrollToElement(frame, resolved.selector);
     // Identify element type
     const elementType = await frame.evaluate((selector) => {
         const el = selector.startsWith('xpath=')
@@ -417,7 +455,7 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                     if (!resolved.found) {
                         throw new Error('Element not found for hover action');
                     }
-
+                     await this.scrollToElement(this.page, resolved.selector);
                     await this.page.hover(resolved.selector);
                       success = true
           message = 'Hovered' 
@@ -468,7 +506,7 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                     if (!resolved.found) {
                         throw new Error('Element not found for fileSelect action');
                     }
-
+                      await this.scrollToElement(this.page, resolved.selector);
                     const fileData = action.storageData;
                     const byteString = atob(fileData.content.split(',')[1]);
                     const ab = new ArrayBuffer(byteString.length);
