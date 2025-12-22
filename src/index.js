@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { fetchTestCase } = require('./supabase');
 const AutomationService = require('./automation');
+const { validateCloudPayload } = require('./utils');
 require('dotenv').config();
 
 const app = express();
@@ -11,11 +12,11 @@ app.use(cors());
 app.use(express.json());
 
 app.post('/api/run-automation', async (req, res) => {
-    const { testCaseId } = req.body;
-
-    if (!testCaseId) {
-        return res.status(400).json({ error: 'testCaseId is required' });
+    const validateRes = validateCloudPayload(req.body);
+      if (!validateRes.success) {
+        return res.status(400).json({ error:validateRes.error });
     }
+    
 
     console.log(`Received request to run automation for test case ID: ${testCaseId}`);
 
@@ -23,7 +24,7 @@ app.post('/api/run-automation', async (req, res) => {
 
     try {
         // Fetch test case from Supabase
-        const testCase = await fetchTestCase(testCaseId);
+        const testCase = await fetchTestCase(validateCloudPayload.testCaseId);
 
         if (!testCase) {
             return res.status(404).json({ error: 'Test case not found' });

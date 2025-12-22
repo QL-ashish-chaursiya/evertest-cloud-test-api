@@ -175,9 +175,118 @@ const IS_CUSTOM = ['randomName','randomNumber','randomAlphaNumeric','randomEmail
   // 🧾 Custom variable (use stored value)
   return value || "";
 }
+ function validateCloudPayload(payload) {
+  // Validate browserName - required for all cases
+  if (!(payload.userId && payload.projectId)) {
+    return {
+      success: false,
+      error: "userId and projectId is required"
+    };
+  }
+  if (!payload.browser) {
+    return {
+      success: false,
+      error: "Browser name is required"
+    };
+  }
+  // Case 1: Login not required
+  if (!payload.loginRequired) {
+    // Only browserName and testCaseId required (already validated above)
+    return {
+      success: true,
+      error: ""
+    };
+  }
+
+  // Case 2 & 3: Login required
+  if (payload.loginRequired) {
+    
+
+    // Case 2: Social Auth
+    if (payload.loginMode === "social") {
+      
+
+      if (!payload.socialAuth.authTestCaseId) {
+        return {
+          success: false,
+          error: "Test name is required"
+        };
+      }
+
+      return {
+        success: true,
+        error: ""
+      };
+    }
+
+    // Case 3: OTP
+    if (payload.loginMode === "otp") {
+      
+
+      // Validate storageType
+      if (!payload.otp.storageType) {
+        return {
+          success: false,
+          error: "Storage type is required for OTP authentication"
+        };
+      }
+
+       
+
+      // Validate object
+      if (!payload.otp.object) {
+        return {
+          success: false,
+          error: "OTP object is required"
+        };
+      }
+
+      // Validate that object is actually an object
+      if (typeof payload.otp.object === "string") {
+        try {
+          const parsed = JSON.parse(payload.otp.object);
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            return {
+              success: false,
+              error: "OTP object must be a valid JSON object"
+            };
+          }
+        } catch (e) {
+          return {
+            success: false,
+            error: "OTP object must be a valid JSON object"
+          };
+        }
+      } else if (typeof payload.otp.object !== "object" || payload.otp.object === null || Array.isArray(payload.otp.object)) {
+        return {
+          success: false,
+          error: "OTP object must be a valid object"
+        };
+      }
+
+      return {
+        success: true,
+        error: ""
+      };
+    }
+
+    // Invalid loginMode
+    return {
+      success: false,
+      error: "Invalid login mode. Must be either 'social' or 'otp'"
+    };
+  }
+
+  // Should never reach here, but just in case
+  return {
+    success: true,
+    error: ""
+  };
+}
 module.exports = {
     delay,
     normalizeUrl,
     runAssertions,
-    resolveVariableValue
+    resolveVariableValue,
+    validateCloudPayload
 };
