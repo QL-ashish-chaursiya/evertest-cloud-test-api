@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const playwright = require('playwright');
 const { delay, normalizeUrl, runAssertions, resolveVariableValue } = require('./utils');
 
 class AutomationService {
@@ -8,11 +8,24 @@ class AutomationService {
         this.page = null;
     }
 
-    async init() {
-        this.browser = await chromium.launch({
-            headless: false,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+    /**
+     * Initialize the browser/context/page.
+     * @param {Object} options
+     * @param {string} options.browserName - 'chromium' | 'firefox' | 'webkit'
+     * @param {boolean} options.headless
+     */
+    async init({ browserName = 'chromium', headless = false } = {}) {
+        const name = (browserName || 'chromium').toLowerCase();
+        if (!['chromium', 'firefox', 'webkit'].includes(name)) {
+            throw new Error('Unsupported browser: ' + browserName);
+        }
+
+        // Launch the requested browser
+        this.browser = await playwright[name].launch({
+            headless: !!headless,
+            // args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
+
         this.context = await this.browser.newContext();
         this.page = await this.context.newPage();
     }
@@ -21,6 +34,8 @@ class AutomationService {
         if (!this.page) {
             throw new Error('Browser page not initialized. Call init() first.');
         }
+        
+ 
         await this.page.goto(url, { waitUntil: 'load' });
     }
 
@@ -66,6 +81,49 @@ class AutomationService {
             console.error('Global execution error:', err);
         } finally {
             await this.close();
+        }
+
+        return results;
+    }
+
+    /**
+     * Run actions but do NOT close the browser/context afterwards.
+     * Useful to perform a login/auth flow and then continue using the same session.
+     */
+    async runActionsWithoutClose(actions) {
+        const results = [];
+
+        try {
+            for (let i = 0; i < actions.length; i++) {
+                const action = actions[i];
+                console.log(`Executing step ${i + 1}: ${action.type}`);
+
+                let result = {
+                    sequence: action.sequence || i + 1,
+                    description: action.description || action.type,
+                    status: 'pending',
+                    message: ''
+                };
+
+                try {
+                    const actionResult = await this.performAction(action, actions, i);
+                    result.status = actionResult.success ? 'pass' : 'fail';
+                    result.message = actionResult.message || 'Success';
+                } catch (error) {
+                    console.error(`Step ${i + 1} failed:`, error);
+                    result.status = 'fail';
+                    result.message = error.message;
+                    results.push(result);
+                    break;
+                }
+
+                results.push(result);
+
+                const finalWait = action.wait !== undefined ? action.wait : 1;
+                await delay(finalWait * 1000);
+            }
+        } catch (err) {
+            console.error('Global execution error (without close):', err);
         }
 
         return results;

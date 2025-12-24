@@ -33,3 +33,28 @@ module.exports = {
     supabase,
     fetchTestCase
 };
+
+/**
+ * Fetches all test cases for given module IDs, ordered by created_at ascending.
+ * @param {Array<string|number>} moduleIds
+ * @returns {Promise<Array>} - Array of test case objects
+ */
+async function fetchTestCasesByModuleIds({moduleIds,userId,projectId}) {
+    if (!Array.isArray(moduleIds) || moduleIds.length === 0) return [];
+
+    const { data, error } = await supabase
+        .from('test_cases')
+        .select('*')
+        .in('module_id', moduleIds)
+        .eq('user_id', userId)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: true });
+
+    if (error) {
+        throw new Error(`Error fetching test cases by modules: ${error.message}`);
+    }
+
+    return data || [];
+}
+
+module.exports.fetchTestCasesByModuleIds = fetchTestCasesByModuleIds;
