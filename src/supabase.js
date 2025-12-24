@@ -28,10 +28,83 @@ async function fetchTestCase(id) {
 
     return data;
 }
+async function saveTestResults({ 
+    user_id, 
+    test_case, 
+    name, 
+    project_id, 
+    module_id, 
+    status, 
+    result, 
+    fail_screenShot 
+}) {
+    try {
+        console.log('Saving test results to database...');
+        
+        // Step 1: Upsert into test_results table
+        // This creates or updates the test result based on test_case ID
+        const { data, error: upsertError } = await supabase
+            .from('test_results')
+            .upsert(
+                {
+                    user_id,
+                    test_case,
+                    name,
+                    status,
+                    fail_screenShot
+                },
+                { onConflict: ['test_case'] } // Update if test_case already exists
+            )
+            .select();
+
+        if (upsertError) {
+            console.error('Upsert error:', upsertError);
+            throw upsertError;
+        }
+
+        console.log('Test result upserted successfully:', data);
+
+        // Step 2: Insert into run_history table
+        // This creates a new history entry for each test run
+        if (data && data.length > 0) {
+            const { id, name: testName, test_case: testCaseId } = data[0];
+            
+            const newHistoryEntry = {
+                project_id,
+                test_case_id: testCaseId,
+                test_result_id: id,
+                module_id,
+                name: testName,
+                status,
+                fail_screenshot: fail_screenShot,
+                result // This contains: { passed, failed, skipped, total, results: [], status: '✅ TEST PASSED', run_by: 'cloud' }
+            };
+
+            const { data: runData, error: historyError } = await supabase
+                .from('run_history')
+                .insert(newHistoryEntry)
+                .select();
+
+            if (historyError) {
+                console.error('History insert error:', historyError);
+                throw historyError;
+            }
+
+            console.log('Run history inserted successfully:', runData);
+            return runData;
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Failed to save test results:', error);
+        throw error;
+    }
+}
 
 module.exports = {
     supabase,
-    fetchTestCase
+    fetchTestCase,
+    saveTestResults
 };
 
 /**

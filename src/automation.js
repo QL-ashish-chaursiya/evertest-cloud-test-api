@@ -1,5 +1,5 @@
-const playwright = require('playwright');
-const { delay, normalizeUrl, runAssertions, resolveVariableValue } = require('./utils');
+ const playwright = require('playwright');
+const { delay, normalizeUrl, runAssertions, resolveVariableValue, normalizePath } = require('./utils');
 
 class AutomationService {
     constructor() {
@@ -23,7 +23,6 @@ class AutomationService {
         // Launch the requested browser
         this.browser = await playwright[name].launch({
             headless: !!headless,
-            // args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
         this.context = await this.browser.newContext();
@@ -34,8 +33,6 @@ class AutomationService {
         if (!this.page) {
             throw new Error('Browser page not initialized. Call init() first.');
         }
-        
- 
         await this.page.goto(url, { waitUntil: 'load' });
     }
 
@@ -45,6 +42,121 @@ class AutomationService {
         }
     }
 
+    /**
+     * CRITICAL: Run actions with STOP ON FAILURE
+     * This method stops immediately when any action or assertion fails
+     */
+    async runActionsStopOnFailure(actions) {
+        const results = [];
+
+        try {
+            for (let i = 0; i < actions.length; i++) {
+                const action = actions[i];
+                console.log(`Executing step ${i + 1}/${actions.length}: ${action.type}`);
+
+                let result = {
+                    sequence: action.sequence || i + 1,
+                    description: action.description || action.type,
+                    status: 'pending',
+                    message: '',
+                    assertions: []
+                };
+
+                try {
+                    // Execute the action
+                    const actionResult = await this.performAction(action, actions, i);
+                    result.status = actionResult.success ? 'pass' : 'fail';
+                    result.message = actionResult.message || 'Success';
+                    result.assertions = actionResult.assertions || [];
+
+                    // CRITICAL: Stop on failure
+                    if (!actionResult.success) {
+                        console.error(`❌ Step ${i + 1} failed. STOPPING execution.`);
+                        results.push(result);
+                        break; // STOP IMMEDIATELY
+                    }
+                } catch (error) {
+                    console.error(`❌ Step ${i + 1} error:`, error);
+                    result.status = 'fail';
+                    result.message = error.message;
+                    result.assertions = [];
+                    results.push(result);
+                    break; // STOP IMMEDIATELY on error
+                }
+
+                results.push(result);
+
+                // Wait between actions
+                const finalWait = action.wait !== undefined ? action.wait : 1;
+                await delay(finalWait * 1000);
+            }
+        } catch (err) {
+            console.error('Global execution error:', err);
+        }
+
+        return results;
+    }
+
+    /**
+     * Capture screenshot as base64
+     */
+    async captureScreenshot() {
+        if (!this.page) {
+            throw new Error('Browser not initialized');
+        }
+        
+        const screenshot = await this.page.screenshot({
+            fullPage: false,
+            type: 'png'
+        });
+        
+        // Convert to base64
+        const base64 = screenshot.toString('base64');
+        return `data:image/png;base64,${base64}`;
+    }
+
+    /**
+     * Set OTP storage data
+     */
+    async setOtpStorage(otp) {
+        console.log(`Setting OTP storage: ${otp.storageType}`);
+        
+        let otpData;
+        try {
+            otpData = typeof otp.object === 'string' ? JSON.parse(otp.object) : otp.object;
+        } catch (error) {
+            throw new Error('Invalid OTP object format');
+        }
+
+        if (otp.storageType === 'localStorage') {
+            await this.page.evaluate((data) => {
+                for (const [key, value] of Object.entries(data)) {
+                    window.localStorage.setItem(key, value);
+                }
+            }, otpData);
+        } else if (otp.storageType === 'sessionStorage') {
+            await this.page.evaluate((data) => {
+                for (const [key, value] of Object.entries(data)) {
+                    window.sessionStorage.setItem(key, value);
+                }
+            }, otpData);
+        } else if (otp.storageType === 'cookies') {
+            // Convert object to cookies format if needed
+            const cookies = Object.entries(otpData).map(([name, value]) => ({
+                name,
+                value: String(value),
+                domain: new URL(this.page.url()).hostname,
+                path: '/'
+            }));
+            await this.context.addCookies(cookies);
+        }
+
+        console.log('OTP storage set successfully');
+    }
+
+    /**
+     * LEGACY: Original runActions method (kept for backward compatibility)
+     */
     async runActions(actions) {
         const results = [];
 
@@ -88,7 +200,6 @@ class AutomationService {
 
     /**
      * Run actions but do NOT close the browser/context afterwards.
-     * Useful to perform a login/auth flow and then continue using the same session.
      */
     async runActionsWithoutClose(actions) {
         const results = [];
@@ -130,51 +241,47 @@ class AutomationService {
     }
 
     /**
-     * Reusable XPath resolver - tries multiple XPaths and returns the first valid one
+     * Scroll element into view before interaction
      */
-    /**
- * Scroll element into view before interaction
- */
-async scrollToElement(frame, selector) {
-    if (!selector) return;
+    async scrollToElement(frame, selector) {
+        if (!selector) return;
 
-    try {
-        await frame.evaluate((selector) => {
-            let el;
-            if (selector.startsWith('xpath=')) {
-                const xpath = selector.replace('xpath=', '');
-                el = document.evaluate(
-                    xpath,
-                    document,
-                    null,
-                    XPathResult.FIRST_ORDERED_NODE_TYPE,
-                    null
-                ).singleNodeValue;
-            } else {
-                el = document.querySelector(selector);
-            }
+        try {
+            await frame.evaluate((selector) => {
+                let el;
+                if (selector.startsWith('xpath=')) {
+                    const xpath = selector.replace('xpath=', '');
+                    el = document.evaluate(
+                        xpath,
+                        document,
+                        null,
+                        XPathResult.FIRST_ORDERED_NODE_TYPE,
+                        null
+                    ).singleNodeValue;
+                } else {
+                    el = document.querySelector(selector);
+                }
 
-            if (el) {
-                el.scrollIntoView({
-                    behavior: 'auto',
-                    block: 'center',
-                    inline: 'center'
-                });
-            }
-        }, selector);
+                if (el) {
+                    el.scrollIntoView({
+                        behavior: 'auto',
+                        block: 'center',
+                        inline: 'center'
+                    });
+                }
+            }, selector);
 
-        await frame.waitForTimeout(300); // allow scroll to finish
-    } catch (e) {
-        console.warn('⚠️ Scroll failed (non-blocking):', e.message);
+            await frame.waitForTimeout(300);
+        } catch (e) {
+            console.warn('⚠️ Scroll failed (non-blocking):', e.message);
+        }
     }
-}
 
     async resolveSelector(element, frame, timeout = 3000) {
         if (!element) {
             return { selector: null, found: false };
         }
 
-        // Handle uniqueSelector first
         if (element.uniqueSelector) {
             try {
                 const el = await frame.waitForSelector(element.uniqueSelector, { timeout });
@@ -186,7 +293,6 @@ async scrollToElement(frame, selector) {
             }
         }
 
-        // Handle XPath (single or array)
         if (element.xpath) {
             const xpathArray = Array.isArray(element.xpath) ? element.xpath : [element.xpath];
             
@@ -208,9 +314,6 @@ async scrollToElement(frame, selector) {
         return { selector: null, found: false, element: null };
     }
 
-    /**
-     * Locate element by xpath array or uniqueSelector (legacy method - uses resolveSelector)
-     */
     async locateElement(action) {
         const result = await this.resolveSelector(action.element, this.page);
         return { 
@@ -219,9 +322,6 @@ async scrollToElement(frame, selector) {
         };
     }
 
-    /**
-     * Ensure element is clickable and visible
-     */
     async ensureClickable(xpath, timeout = 10000) {
         try {
             const xpathArray = Array.isArray(xpath) ? xpath : [xpath];
@@ -261,68 +361,46 @@ async scrollToElement(frame, selector) {
             console.log('✅ Network is idle');
         } catch (error) {
             console.warn('⚠️ Network idle timeout:', error.message);
-            // Continue execution even if timeout occurs
         }
     }
 
-    /**
-     * Get the correct frame context (main page or iframe)
-     */
-     normalizePath(path) {
-  return path
-    .split('/')                 
-    .filter(Boolean)               
-    .filter(segment => !isIdSegment(segment)) 
-    .join('/');
-}
-async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
-  const recorded = new URL(refSrc);
-  const start = Date.now();
+    async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
+        const recorded = new URL(refSrc);
+        const start = Date.now();
 
-  while (Date.now() - start < timeoutMs) {
-    const frames = this.page.frames();
-   console.log("all frames",frames)
-    for (const frame of frames) {
-      try {
-        if (!frame.url()) continue;
+        while (Date.now() - start < timeoutMs) {
+            const frames = this.page.frames();
+            
+            for (const frame of frames) {
+                try {
+                    if (!frame.url()) continue;
 
-        const current = new URL(frame.url());
-      console.log("current",normalizePath(current.pathname))
-        console.log("recorded",normalizePath(recorded.pathname))
-        const sameOrigin =
-          current.origin === recorded.origin;
+                    const current = new URL(frame.url());
+                    const sameOrigin = current.origin === recorded.origin;
+                    const samePath = normalizePath(current.pathname) === normalizePath(recorded.pathname);
 
-        const samePath =
-          normalizePath(current.pathname) ===
-          normalizePath(recorded.pathname);
+                    if (sameOrigin && samePath) {
+                        console.log("✅ Found iframe:", frame.url());
+                        return frame;
+                    }
+                } catch (e) {
+                    // ignore invalid URLs
+                }
+            }
 
-        if (sameOrigin && samePath) {
-          console.log("✅ Found iframe:", frame.url());
-          return frame;
+            await this.page.waitForTimeout(intervalMs);
         }
-      } catch (e) {
-        // ignore invalid URLs
-      }
+
+        throw new Error(`⏱️ Iframe not found within ${timeoutMs}ms for ${refSrc}`);
     }
-
-    await this.page.waitForTimeout(intervalMs);
-  }
-
-  throw new Error(`⏱️ Iframe not found within ${timeoutMs}ms for ${refSrc}`);
-}
 
     async getFrameContext(action) {
-  if (action.isTopFrame === false && action.iframeIdentifier?.src) {
-    return await this.waitForIframeBySrc(action.iframeIdentifier.src);
-  }
+        if (action.isTopFrame === false && action.iframeIdentifier?.src) {
+            return await this.waitForIframeBySrc(action.iframeIdentifier.src);
+        }
+        return this.page;
+    }
 
-  return this.page;
-}
-
-
-    /**
-     * Dispatch events on an element (handles xpath= prefix)
-     */
     async dispatchEvents(frame, selector, value, events = ['input', 'change']) {
         await frame.evaluate(({ selector, value, events }) => {
             let el;
@@ -343,28 +421,25 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
         }, { selector, value, events });
     }
 
-    /**
-     * Main action performer
-     */
     async performAction(action, arr = [], index = 0) {
-         let  success = false;
-  let  message = "";
-  let assertions = [];
+        let success = false;
+        let message = "";
+        let assertions = [];
+        
         try {
             const frame = await this.getFrameContext(action);
 
-            // Wait for network idle before performing any action (except navigation actions)
             const skipNetworkIdleFor = ['System_Navigate', 'navigate'];
             if (!skipNetworkIdleFor.includes(action.type)) {
-               // await this.waitForNetworkIdle(20000);
+                // await this.waitForNetworkIdle(20000);
             }
 
             switch (action.type) {
                 case 'System_Navigate':
                     await frame.goto(action.url, { waitUntil: 'networkidle' });
-                     success =  true, 
-                     message  = `Navigated to ${action.url}` ;
-                     break
+                    success = true;
+                    message = `Navigated to ${action.url}`;
+                    break;
 
                 case 'navigate': {
                     const normalizedExpected = normalizeUrl(action.url);
@@ -383,19 +458,18 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                         await delay(pollInterval);
                         elapsed += pollInterval;
                     }
-                     success =  true, 
-                      message = isMatch
-                            ? `Current URL matches expected (normalized): ${normalizeUrl(frame.url())}`
-                            : `Current URL does not match expected: ${normalizeUrl(frame.url())} vs ${normalizedExpected}`
-                     break
-                    
+                    success = true;
+                    message = isMatch
+                        ? `Current URL matches expected (normalized): ${normalizeUrl(frame.url())}`
+                        : `Current URL does not match expected: ${normalizeUrl(frame.url())} vs ${normalizedExpected}`;
+                    break;
                 }
 
                 case 'mousedown': {
                     const nextAction = arr?.length - 1 > index && arr[index + 1]?.type === 'fileSelect';
-                    const isJsPopup = action.element.isAlert
+                    const isJsPopup = action.element.isAlert;
                     if (nextAction || isJsPopup) {
-                        return { success: true, message: 'File input: click skipped to avoid file dialog' };
+                        return { success: true, message: 'File input: click skipped to avoid file dialog', assertions: [] };
                     }
 
                     if (!action.element?.xpath) {
@@ -404,7 +478,7 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
 
                     const clickResult = await this.ensureClickable(action.element.xpath, 10000);
                     if (!clickResult.success) {
-                        return clickResult;
+                        return { success: false, message: clickResult.message, assertions: [] };
                     }
 
                     const elementHandle = await frame.$(clickResult.selector);
@@ -421,103 +495,98 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                     await frame.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
                     await frame.mouse.down();
                     await frame.mouse.up();
-                    success =  true, 
-                     message  = `Mouse click simulated (isTrusted)` ;
-                     break
-                    
+                    success = true;
+                    message = `Mouse click simulated (isTrusted)`;
+                    break;
                 }
 
                 case 'change': {
-                      const isJsPopup = action.element.isAlert
+                    const isJsPopup = action.element.isAlert;
                     if (isJsPopup) {
-                        return { success: true, message: 'change ignore in Js popup' };
+                        return { success: true, message: 'change ignore in Js popup', assertions: [] };
                     }
-    const resolved = await this.resolveSelector(action.element, frame);
-    if (!resolved.found) throw new Error('Element not found for change action');
-      await this.scrollToElement(frame, resolved.selector);
-    // Identify element type
-    const elementType = await frame.evaluate((selector) => {
-        const el = selector.startsWith('xpath=')
-            ? document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
-            : document.querySelector(selector);
-        if (!el) return null;
+                    
+                    const resolved = await this.resolveSelector(action.element, frame);
+                    if (!resolved.found) throw new Error('Element not found for change action');
+                    await this.scrollToElement(frame, resolved.selector);
 
-        if (el.tagName === 'SELECT') return 'select';
-        if (el.type === 'checkbox') return 'checkbox';
-        if (el.type === 'radio') return 'radio';
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return 'text';
+                    const elementType = await frame.evaluate((selector) => {
+                        const el = selector.startsWith('xpath=')
+                            ? document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+                            : document.querySelector(selector);
+                        if (!el) return null;
 
-        return 'unknown';
-    }, resolved.selector);
+                        if (el.tagName === 'SELECT') return 'select';
+                        if (el.type === 'checkbox') return 'checkbox';
+                        if (el.type === 'radio') return 'radio';
+                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return 'text';
 
-    if (!elementType) throw new Error("Unable to detect element type");
+                        return 'unknown';
+                    }, resolved.selector);
 
-    // Handle according to element type
-    if (elementType === 'text') {
-         const finalValue = action?.variable?.name ? resolveVariableValue(action?.variable) : action.value;
-        await frame.fill(resolved.selector, finalValue || '');
-        await this.dispatchEvents(frame, resolved.selector, finalValue);
-         success = true
-          message = 'Text entered' 
-          break
-    }
+                    if (!elementType) throw new Error("Unable to detect element type");
 
-     if (elementType === 'checkbox') {
-    // 1. Try direct check()
-    try {
-        await frame.check(resolved.selector, { force: true });
-        success = true
-          message = 'Text entered' 
-          break
-    } catch (e) {
-        // 2. Fallback: click the label
-        const inputId = await frame.evaluate(selector => {
-            const el = document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-            return el?.id || null;
-        }, resolved.selector);
+                    if (elementType === 'text') {
+                        const finalValue = action?.variable?.name ? resolveVariableValue(action?.variable) : action.value;
+                        await frame.fill(resolved.selector, finalValue || '');
+                        await this.dispatchEvents(frame, resolved.selector, finalValue);
+                        success = true;
+                        message = 'Text entered';
+                        break;
+                    }
 
-        if (inputId) {
-            await frame.click(`label[for="${inputId}"]`, { force: true });
-            success = true
-          message = 'Text entered' 
-          break
-        }
+                    if (elementType === 'checkbox') {
+                        try {
+                            await frame.check(resolved.selector, { force: true });
+                            success = true;
+                            message = 'Checkbox checked';
+                            break;
+                        } catch (e) {
+                            const inputId = await frame.evaluate(selector => {
+                                const el = document.evaluate(selector.replace('xpath=', ''), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                                return el?.id || null;
+                            }, resolved.selector);
 
-        throw e;
-    }
-}
+                            if (inputId) {
+                                await frame.click(`label[for="${inputId}"]`, { force: true });
+                                success = true;
+                                message = 'Checkbox checked via label';
+                                break;
+                            }
 
+                            throw e;
+                        }
+                    }
 
-    if (elementType === 'radio') {
-        await frame.check(resolved.selector);
-          success = true
-          message = 'Text entered' 
-          break
-    }
+                    if (elementType === 'radio') {
+                        await frame.check(resolved.selector);
+                        success = true;
+                        message = 'Radio selected';
+                        break;
+                    }
 
-    if (elementType === 'select') {
-        await frame.selectOption(resolved.selector, action.value);
-         success = true
-          message = 'Text entered' 
-          break
-    }
+                    if (elementType === 'select') {
+                        await frame.selectOption(resolved.selector, action.value);
+                        success = true;
+                        message = 'Option selected';
+                        break;
+                    }
 
-     success = false
-          message = 'Unsupported Type' 
-          break
-}
-
+                    success = false;
+                    message = 'Unsupported Type';
+                    break;
+                }
 
                 case 'hover': {
                     const resolved = await this.resolveSelector(action.element, this.page);
                     if (!resolved.found) {
                         throw new Error('Element not found for hover action');
                     }
-                     await this.scrollToElement(this.page, resolved.selector);
+                    await this.scrollToElement(this.page, resolved.selector);
                     await this.page.hover(resolved.selector);
-                      success = true
-          message = 'Hovered' 
-          break
+                    success = true;
+                    message = 'Hovered';
+                    break;
                 }
 
                 case 'scroll': {
@@ -535,10 +604,9 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                         }, { x: action.scrollX, y: action.scrollY });
                     }
                     await delay(1000);
-                    
-                     success = true
-          message = `Scroll to (${action.scrollX}, ${action.scrollY}) successful`
-          break
+                    success = true;
+                    message = `Scroll to (${action.scrollX}, ${action.scrollY}) successful`;
+                    break;
                 }
 
                 case 'Enter':
@@ -549,22 +617,23 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                 case 'ArrowRight':
                 case 'Escape':
                     await this.page.keyboard.press(action.type);
-                       success = true
-          message = `Successfully Pressed`
-          break
+                    success = true;
+                    message = `Successfully Pressed`;
+                    break;
 
                 case 'fileSelect': {
                     if (!action.storageData) {
-                        success = false
-          message = `File error`
-          break
+                        success = false;
+                        message = `File error`;
+                        break;
                     }
 
                     const resolved = await this.resolveSelector(action.element, this.page);
                     if (!resolved.found) {
                         throw new Error('Element not found for fileSelect action');
                     }
-                      await this.scrollToElement(this.page, resolved.selector);
+                    await this.scrollToElement(this.page, resolved.selector);
+                    
                     const fileData = action.storageData;
                     const byteString = atob(fileData.content.split(',')[1]);
                     const ab = new ArrayBuffer(byteString.length);
@@ -580,26 +649,24 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                         buffer: buffer
                     });
 
-                   
-                       success = true
-          message =  `File "${fileData.name}" selected`
-          break
+                    success = true;
+                    message = `File "${fileData.name}" selected`;
+                    break;
                 }
 
                 case 'dragstart': {
                     const { element, failed } = await this.locateElement(action);
                     if (failed || !element) {
-                       success = false
-                      message =  `dragstart: element not found`
-                       break
+                        success = false;
+                        message = `dragstart: element not found`;
+                        break;
                     }
 
                     const box = await element.boundingBox();
                     if (!box) {
-                        
-                         success = false
-                      message =   'dragstart: cannot get bounding box'
-                       break
+                        success = false;
+                        message = 'dragstart: cannot get bounding box';
+                        break;
                     }
 
                     const x = box.x + box.width / 2;
@@ -634,10 +701,9 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                         pointerType: 'mouse',
                     });
 
-                    
-                      success = true
-                      message =    'Drag started via Playwright CDP'
-                       break
+                    success = true;
+                    message = 'Drag started via Playwright CDP';
+                    break;
                 }
 
                 case 'dragend': {
@@ -688,34 +754,33 @@ async waitForIframeBySrc(refSrc, timeoutMs = 30000, intervalMs = 500) {
                         if (style) style.remove();
                     });
 
-                    
-                     success = true
-                      message =    'Drag end via Playwright CDP'
-                       break
+                    success = true;
+                    message = 'Drag end via Playwright CDP';
+                    break;
                 }
 
                 default:
                     console.warn(`Unsupported action type: ${action.type}`);
-                   
-                     success = false
-                      message =     `Unsupported action type: ${action.type}`
-                       break
+                    success = false;
+                    message = `Unsupported action type: ${action.type}`;
+                    break;
             }
-             assertions = await runAssertions(action,this.page, action.element);
-             console.log("assertions",assertions)
-    const failedAssertions = assertions.some((a) => a.success == false);
-    const failedMsg =
-      assertions.find((a) => a.success == false)?.message ||
-      "No failed assertions";
-      
-    return {
-      success: success && !failedAssertions,
-      message: failedAssertions ? failedMsg : message,
-      assertions,
-    };
+
+            // Run assertions
+            assertions = await runAssertions(action, this.page, action.element);
+            console.log("assertions", assertions);
+            
+            const failedAssertions = assertions.some((a) => a.success == false);
+            const failedMsg = assertions.find((a) => a.success == false)?.message || "No failed assertions";
+            
+            return {
+                success: success && !failedAssertions,
+                message: failedAssertions ? failedMsg : message,
+                assertions,
+            };
         } catch (error) {
             console.error(`Action failed:`, error);
-            return { success: false, message: error.message };
+            return { success: false, message: error.message, assertions: [] };
         }
     }
 }
