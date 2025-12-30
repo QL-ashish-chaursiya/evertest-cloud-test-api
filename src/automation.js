@@ -1,5 +1,5 @@
  const playwright = require('playwright');
-const { delay, normalizeUrl, runAssertions, resolveVariableValue, normalizePath } = require('./utils');
+const { delay, normalizeUrl, runAssertions, resolveVariableValue, normalizePath, isIdSegment } = require('./utils');
 
 class AutomationService {
     constructor() {
@@ -14,7 +14,7 @@ class AutomationService {
      * @param {string} options.browserName - 'chromium' | 'firefox' | 'webkit'
      * @param {boolean} options.headless
      */
-    async init({ browserName = 'chromium', headless = false } = {}) {
+    async init({ browserName = 'chromium', headless =  true } = {}) {
         const name = (browserName || 'chromium').toLowerCase();
         if (!['chromium', 'firefox', 'webkit'].includes(name)) {
             throw new Error('Unsupported browser: ' + browserName);
@@ -123,35 +123,54 @@ class AutomationService {
         
         let otpData;
         try {
+            // Parse the JSON string to get the object
             otpData = typeof otp.object === 'string' ? JSON.parse(otp.object) : otp.object;
+            console.log('Parsed OTP data:', Object.keys(otpData));
         } catch (error) {
-            throw new Error('Invalid OTP object format');
+            console.error('Error parsing OTP object:', error);
+            throw new Error('Invalid OTP object format: ' + error.message);
         }
 
         if (otp.storageType === 'localStorage') {
             await this.page.evaluate((data) => {
                 for (const [key, value] of Object.entries(data)) {
-                    window.localStorage.setItem(key, value);
+                    // CRITICAL: Store the value as a JSON string if it's an object
+                    const storageValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
+                    window.localStorage.setItem(key, storageValue);
+                    console.log(`✅ Set localStorage['${key}']`);
                 }
             }, otpData);
+            console.log('✅ localStorage set successfully');
         } else if (otp.storageType === 'sessionStorage') {
             await this.page.evaluate((data) => {
                 for (const [key, value] of Object.entries(data)) {
-                    window.sessionStorage.setItem(key, value);
+                    // CRITICAL: Store the value as a JSON string if it's an object
+                    const storageValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
+                    window.sessionStorage.setItem(key, storageValue);
+                    console.log(`✅ Set sessionStorage['${key}']`);
                 }
             }, otpData);
+            console.log('✅ sessionStorage set successfully');
         } else if (otp.storageType === 'cookies') {
             // Convert object to cookies format if needed
             const cookies = Object.entries(otpData).map(([name, value]) => ({
                 name,
-                value: String(value),
+                value: typeof value === 'object' ? JSON.stringify(value) : String(value),
                 domain: new URL(this.page.url()).hostname,
                 path: '/'
             }));
             await this.context.addCookies(cookies);
+            console.log('✅ Cookies set successfully');
         }
 
-        console.log('OTP storage set successfully');
+        // Verify storage was set
+        if (otp.storageType === 'localStorage') {
+            const verification = await this.page.evaluate(() => {
+                const keys = Object.keys(window.localStorage);
+                return keys.map(key => ({ key, hasValue: !!window.localStorage.getItem(key) }));
+            });
+            console.log('localStorage verification:', verification);
+        }
     }
 
     /**
@@ -347,8 +366,8 @@ class AutomationService {
                     continue;
                 }
             }
-            
-            return { success: false, message: 'Element is not visible' };
+            const xpathInfo = xpathArray[0];
+            return { success: false, message: `Element is not visible. XPath: ${xpathInfo}` };
         } catch (error) {
             return { success: false, message: error.message };
         }

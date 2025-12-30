@@ -48,8 +48,6 @@ app.post('/api/run-automation', async (req, res) => {
         automationService = new AutomationService();
         await automationService.init({ browserName: browserName || 'chromium', headless: payload.headless });
 
-        let loginSession = null;
-
         // Handle login if required
         if (loginRequired) {
             if (loginMode === 'social' && socialAuth?.authTestCaseId) {
@@ -65,8 +63,9 @@ app.post('/api/run-automation', async (req, res) => {
                 
                 console.log('Auth test completed, session established');
             } else if (loginMode === 'otp' && otp) {
-                console.log('Setting OTP storage...');
-                await automationService.setOtpStorage(otp);
+                // For OTP, we need to navigate first, then set storage
+                // We'll set a flag and handle it per test case
+                console.log('OTP mode enabled - will set storage after navigation');
             }
         }
 
@@ -108,9 +107,18 @@ app.post('/api/run-automation', async (req, res) => {
             try {
                 console.log(`Running test case: ${testCase.id} - ${testCase.name}`);
 
-                // Navigate to test case URL
+                // Navigate to test case URL FIRST
                 if (testCase.url) {
                     await automationService.navigateTo(testCase.url);
+                    
+                    // CRITICAL FIX: Set OTP storage AFTER navigation
+                    if (loginRequired && loginMode === 'otp' && otp) {
+                        console.log('Setting OTP storage after navigation...');
+                        await automationService.setOtpStorage(otp);
+                        
+                        // Reload page to apply storage
+                        await automationService.page.reload({ waitUntil: 'load' });
+                    }
                 }
 
                 // Run actions with stop on failure
